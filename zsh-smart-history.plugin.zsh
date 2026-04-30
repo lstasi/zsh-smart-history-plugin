@@ -11,7 +11,7 @@ typeset -gr _ZSH_SMART_HISTORY_HELPER="${ZSH_SMART_HISTORY_PLUGIN_DIR}/lib/zsh_s
 : "${ZSH_SMART_HISTORY_HISTORY_LIMIT:=500}"
 : "${ZSH_SMART_HISTORY_MAX_COMMAND_LENGTH:=300}"
 : "${ZSH_SMART_HISTORY_PYTHON:=python3}"
-: "${ZSH_SMART_HISTORY_KEYBIND:=^@}"
+: "${ZSH_SMART_HISTORY_KEYBIND=^@}"
 
 typeset -ga _zsh_smart_history_suggestions=()
 typeset -g _zsh_smart_history_original_buffer=""

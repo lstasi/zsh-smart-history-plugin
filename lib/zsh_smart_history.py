@@ -43,7 +43,7 @@ SENSITIVE_PATTERNS = [
         r"\1<redacted>",
     ),
     (
-        re.compile(r"(?i)(\b-p)([^\s]+)"),
+        re.compile(r"(?i)((?<!\S)-p)([^\s]+)"),
         r"\1<redacted>",
     ),
     (
@@ -139,7 +139,7 @@ def looks_like_noise(command: str, max_command_length: int) -> bool:
         if "\\\n" not in command and stripped.count(" --") < 2:
             return True
 
-    if stripped.count("\n") >= 8:
+    if stripped.count("\n") >= 8 and "\\\n" not in command:
         return True
 
     if LONG_BASE64_PATTERN.search(stripped):
@@ -161,6 +161,8 @@ def sanitize_command(command: str) -> str:
 def sanitize_commands(commands: Iterable[str], max_command_length: int) -> list[str]:
     sanitized_commands: list[str] = []
     for command in commands:
+        if looks_like_noise(command, max_command_length):
+            continue
         collapsed = collapse_command(command)
         if looks_like_noise(collapsed, max_command_length):
             continue
@@ -250,11 +252,12 @@ def fallback_suggestions(
 
 
 def build_prompt(stats: Iterable[CommandStat], current_buffer: str, cwd: str, count: int) -> str:
+    sanitized_buffer = sanitize_command(collapse_command(current_buffer))
     summary_lines = [
         "You are completing shell commands for a Zsh user.",
         "Return only shell commands, one per line, no numbering, no explanations.",
         f"Current working directory: {cwd}",
-        f"Current partially typed command: {current_buffer or '<empty>'}",
+        f"Current partially typed command: {sanitized_buffer or '<empty>'}",
         f"Return at most {count} commands.",
         "History summary (most relevant commands with count and recency):",
     ]

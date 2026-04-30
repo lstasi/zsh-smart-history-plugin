@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -36,12 +37,30 @@ class SanitizationTest(unittest.TestCase):
         self.assertIn("--password=<redacted>", sanitized)
         self.assertIn("api_key=<redacted>", sanitized)
 
+    def test_sanitizes_mysql_short_password_flag(self) -> None:
+        sanitized = zsh_smart_history.sanitize_command("mysql -psecret db")
+
+        self.assertEqual(sanitized, "mysql -p<redacted> db")
+
 
 class NoiseFilterTest(unittest.TestCase):
     def test_filters_large_json_dump(self) -> None:
         noisy_command = "{" + '"k":"' + ("x" * 200) + '"}'
 
         self.assertTrue(zsh_smart_history.looks_like_noise(noisy_command, 300))
+
+    def test_filters_large_multiline_paste(self) -> None:
+        noisy_command = "\n".join(f"line {index}" for index in range(9))
+
+        self.assertEqual(zsh_smart_history.sanitize_commands([noisy_command], 300), [])
+
+    def test_keeps_line_continued_shell_command(self) -> None:
+        command = "printf 'hello' \\\n  && echo done"
+
+        self.assertEqual(
+            zsh_smart_history.sanitize_commands([command], 300),
+            ["printf 'hello' && echo done"],
+        )
 
 
 class RankingTest(unittest.TestCase):
@@ -115,7 +134,50 @@ class SuggestTest(unittest.TestCase):
                     max_command_length=300,
                 )
 
-        self.assertEqual(suggestions, ["git status", "git add ."])
+        self.assertEqual(suggestions, ["git add .", "git status"])
+
+    def test_sanitizes_current_buffer_before_model_request(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            history_path = Path(tmpdir) / "history"
+            history_path.write_text(": 1715200000:0;git status\n", encoding="utf-8")
+
+            with patch("lib.zsh_smart_history.call_ollama") as call_ollama:
+                call_ollama.return_value = ""
+
+                zsh_smart_history.suggest(
+                    history_path=str(history_path),
+                    cwd=tmpdir,
+                    current_buffer='curl -H "Authorization: Bearer abc123"',
+                    count=3,
+                    model="codellama",
+                    ollama_url="http://127.0.0.1:11434",
+                    timeout_seconds=1.0,
+                    history_limit=100,
+                    max_command_length=300,
+                )
+
+        prompt = call_ollama.call_args.args[2]
+        self.assertIn("Authorization: Bearer <redacted>", prompt)
+        self.assertNotIn("abc123", prompt)
+
+
+class PluginConfigurationTest(unittest.TestCase):
+    def test_empty_keybind_remains_disabled(self) -> None:
+        plugin_path = Path(__file__).resolve().parents[1] / "zsh-smart-history.plugin.zsh"
+
+        result = subprocess.run(
+            [
+                "zsh",
+                "-fc",
+                f'ZSH_SMART_HISTORY_KEYBIND=""; source "{plugin_path}" >/dev/null 2>&1; '
+                'print -r -- ${ZSH_SMART_HISTORY_KEYBIND}',
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(result.stdout, "\n")
 
 
 class CompactCommandTest(unittest.TestCase):

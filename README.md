@@ -2,7 +2,7 @@
 
 `zsh-smart-history` is an Oh My Zsh plugin that turns your recent Zsh history into command suggestions powered by Ollama.
 
-It reads your normal `HISTFILE`, removes noise, scrubs common secrets, keeps the most relevant commands, and combines that compacted history with your current working directory and the text already in your prompt. By default it talks to a local Ollama instance, but you can point it at an external Ollama host with an environment variable.
+It reads your normal `HISTFILE`, removes noise, scrubs common secrets, keeps the most relevant commands, and combines that compacted history with your current working directory and a sanitized version of the text already in your prompt. By default it talks to a local Ollama instance, but you can point it at an external Ollama host with an environment variable.
 
 This project does **not** depend on `per-directory-history`, and it is not derived from that plugin.
 
@@ -66,7 +66,7 @@ All configuration is environment-variable driven.
 | `ZSH_SMART_HISTORY_HISTORY_LIMIT` | `500` | Number of most recent history entries inspected before compaction. |
 | `ZSH_SMART_HISTORY_MAX_COMMAND_LENGTH` | `300` | Length cutoff used by the noise filter. |
 | `ZSH_SMART_HISTORY_PYTHON` | `python3` | Python executable used to run the helper script. |
-| `ZSH_SMART_HISTORY_KEYBIND` | `^@` | Key sequence bound to the widget. `^@` is the usual `Ctrl-Space` representation in Zsh. |
+| `ZSH_SMART_HISTORY_KEYBIND` | `^@` | Key sequence bound to the widget. `^@` is the usual `Ctrl-Space` representation in Zsh. Set it to an empty string to disable automatic binding. |
 
 More examples are in [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
 
@@ -80,12 +80,12 @@ export ZSH_SMART_HISTORY_OLLAMA_URL="https://ollama.internal.example.com:11434"
 
 If you omit the scheme and set `host:port`, the helper automatically normalizes it to `http://host:port`.
 
-Privacy note: when you point the plugin to a remote Ollama host, the sanitized compacted history summary leaves your machine and is sent to that host.
+Privacy note: when you point the plugin to a remote Ollama host, the sanitized compacted history summary and sanitized current buffer leave your machine and are sent to that host.
 
 ## Usage
 
 1. Press your configured trigger key. The default is `Ctrl-Space`.
-2. The helper compacts history, scrubs sensitive values, and requests suggestions from Ollama.
+2. The helper compacts history, scrubs sensitive values from both history and the current buffer, and requests suggestions from Ollama.
 3. If multiple suggestions are returned, use Up or Down to cycle through them.
 4. Press Tab or Enter to keep the currently previewed suggestion in the command line.
 5. Press Esc or Ctrl-C to restore the original buffer.
