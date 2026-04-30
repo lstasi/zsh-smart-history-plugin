@@ -1,0 +1,1 @@
+# zsh-smart-history-plugin
