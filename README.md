@@ -1,113 +1,141 @@
 # zsh-smart-history
 
-An Oh My Zsh plugin that supercharges your terminal workflow using local AI (Ollama).
+`zsh-smart-history` is an Oh My Zsh plugin that turns your recent Zsh history into command suggestions powered by Ollama.
 
-`zsh-smart-history` doesn't just grep your past commands; it intelligently compacts, sanitizes, and analyzes your history to predict exactly what you want to type next. By processing data locally, your history remains private, fast, and highly relevant to the specific directory you are working in.
+It reads your normal `HISTFILE`, removes noise, scrubs common secrets, keeps the most relevant commands, and combines that compacted history with your current working directory and the text already in your prompt. By default it talks to a local Ollama instance, but you can point it at an external Ollama host with an environment variable.
 
-## ✨ Features
+This project does **not** depend on `per-directory-history`, and it is not derived from that plugin.
 
-*   🧠 **AI-Powered Suggestions:** Calls your local Ollama instance with your recent context to generate accurate command suggestions.
-*   🛡️ **Privacy-First Compaction:** Never sends your raw history file to the AI. A local "compactor" pre-processes the data first.
-*   🔒 **Auto-Sanitization:** Automatically strips sensitive data (passwords, API keys, tokens) before the AI sees your history.
-*   🧹 **Noise Reduction:** Detects and scrubs accidental large text or code pastes that clutter standard history files.
-*   📈 **Smart Sorting:** Removes duplicate commands and weights history based on usage frequency.
-*   📂 **Directory Aware:** Suggests commands relevant to your current project folder. Works standalone or in combination with the `per-directory-history` plugin.
-*   ⌨️ **Interactive UI:** Navigate through AI suggestions seamlessly using your `Arrow` keys and `Tab` to complete.
-*   ⚙️ **Highly Configurable:** Easily define how many suggestions you want returned and which Ollama model to use.
+## Features
 
-## 🚀 Prerequisites
+- AI-backed command suggestions from your recent shell history
+- Secret scrubbing for common tokens, passwords, bearer headers, AWS env vars, and URL credentials
+- Noise filtering for large pastes, dumps, and obviously non-command history entries
+- Current-directory context without a custom per-directory history store
+- Graceful fallback to history-only ranking when Ollama is unavailable
+- Interactive ZLE flow: trigger suggestions, cycle with Up/Down, accept with Tab or Enter, cancel with Esc
+- Configurable model, suggestion count, timeout, history depth, keybinding, and Ollama base URL
+- Standard-library-only helper script plus unit tests and GitHub Actions workflows
 
-*   [Oh My Zsh](https://ohmyz.sh/)
-*   [Ollama](https://ollama.com/) running locally (we recommend a fast code model like `codellama` or `deepseek-coder`).
+## Requirements
 
-## 📦 Installation
+- Zsh
+- Oh My Zsh
+- Python 3.9+
+- Ollama reachable from the machine running the shell
 
-1. Clone this repository into your Oh My Zsh custom plugins directory:
+## Installation
+
+1. Clone the repository into your Oh My Zsh custom plugins directory.
 
 ```bash
 git clone https://github.com/lstasi/zsh-smart-history-plugin ${ZSH_CUSTOM:-~/.oh-my-zsh/custom}/plugins/zsh-smart-history
 ```
 
-2. Add the plugin to your `~/.zshrc` file:
+2. Add the plugin to your `plugins` list in `~/.zshrc`.
 
 ```zsh
 plugins=(... zsh-smart-history)
 ```
 
-3. Restart your shell or reload the configuration:
+3. Add any optional configuration variables before `source $ZSH/oh-my-zsh.sh`.
+
+```zsh
+export ZSH_SMART_HISTORY_MODEL="qwen2.5-coder"
+export ZSH_SMART_HISTORY_SUGGESTION_COUNT=5
+export ZSH_SMART_HISTORY_OLLAMA_URL="http://127.0.0.1:11434"
+```
+
+4. Reload your shell.
 
 ```bash
 source ~/.zshrc
 ```
 
-## 🛠️ Configuration
+## Configuration
 
-You can customize the plugin by adding the following variables to your `~/.zshrc` before sourcing Oh My Zsh:
+All configuration is environment-variable driven.
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `ZSH_SMART_HISTORY_ENABLED` | `1` | Set to `0`, `false`, `no`, or `off` to disable the widget without uninstalling. |
+| `ZSH_SMART_HISTORY_MODEL` | `codellama` | Ollama model name sent to `/api/generate`. |
+| `ZSH_SMART_HISTORY_SUGGESTION_COUNT` | `3` | Maximum number of suggestions returned to the widget. |
+| `ZSH_SMART_HISTORY_OLLAMA_URL` | `http://127.0.0.1:11434` | Ollama base URL. If unset, the plugin also honors `OLLAMA_HOST`. |
+| `ZSH_SMART_HISTORY_TIMEOUT` | `4` | Request timeout in seconds. |
+| `ZSH_SMART_HISTORY_HISTORY_LIMIT` | `500` | Number of most recent history entries inspected before compaction. |
+| `ZSH_SMART_HISTORY_MAX_COMMAND_LENGTH` | `300` | Length cutoff used by the noise filter. |
+| `ZSH_SMART_HISTORY_PYTHON` | `python3` | Python executable used to run the helper script. |
+| `ZSH_SMART_HISTORY_KEYBIND` | `^@` | Key sequence bound to the widget. `^@` is the usual `Ctrl-Space` representation in Zsh. |
+
+More examples are in [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
+
+### External Ollama
+
+To use a remote Ollama instance, set `ZSH_SMART_HISTORY_OLLAMA_URL` to a reachable HTTP or HTTPS endpoint.
 
 ```zsh
-# Set the Ollama model you want to use (default: codellama)
-ZSH_SMART_HISTORY_MODEL="codellama"
-
-# Set the number of suggestions to return (default: 3)
-ZSH_SMART_HISTORY_SUGGESTION_COUNT=5
-
-# Enable integration with per-directory-history plugin (default: true)
-ZSH_SMART_HISTORY_FOLDER_AWARE=true
+export ZSH_SMART_HISTORY_OLLAMA_URL="https://ollama.internal.example.com:11434"
 ```
 
-## 🎯 Usage
+If you omit the scheme and set `host:port`, the helper automatically normalizes it to `http://host:port`.
 
-Once installed, the plugin will automatically enhance your command-line experience:
+Privacy note: when you point the plugin to a remote Ollama host, the sanitized compacted history summary leaves your machine and is sent to that host.
 
-*   Press the configured keybinding (default: `Ctrl+Space`) to trigger AI-powered suggestions
-*   Use `Arrow` keys to navigate through suggestions
-*   Press `Tab` to preview a suggestion
-*   Press `Enter` to populate your command buffer (without executing immediately)
+## Usage
 
-## 🏗️ Architecture
+1. Press your configured trigger key. The default is `Ctrl-Space`.
+2. The helper compacts history, scrubs sensitive values, and requests suggestions from Ollama.
+3. If multiple suggestions are returned, use Up or Down to cycle through them.
+4. Press Tab or Enter to keep the currently previewed suggestion in the command line.
+5. Press Esc or Ctrl-C to restore the original buffer.
 
-The plugin consists of three main components:
+The widget never executes the suggested command automatically.
 
-### 1. History Compactor
-A local data preparation layer that:
-- Reads from global or per-directory history files
-- Removes duplicate commands
-- Sorts commands by usage frequency
-- Filters out noise (large pastes, non-commands)
-- Sanitizes sensitive data (API keys, passwords, tokens)
+### Suggested Keybinding Override
 
-### 2. Ollama Integration
-An AI layer that:
-- Sends compacted history to your local Ollama instance
-- Uses a specialized system prompt for command prediction
-- Returns configurable number of suggestions
-- Maintains privacy by keeping all processing local
+Some terminals do not pass `Ctrl-Space` cleanly. If that happens, choose an explicit sequence such as `Ctrl-X Ctrl-H`.
 
-### 3. Zsh Line Editor (ZLE) UI
-An interactive interface that:
-- Binds to keyboard shortcuts
-- Displays suggestions in an intuitive menu
-- Allows navigation with arrow keys and tab
-- Populates the command buffer without auto-execution
+```zsh
+export ZSH_SMART_HISTORY_KEYBIND='^X^H'
+```
 
-## 🔒 Privacy & Security
+## How It Works
 
-All processing happens **100% locally** on your machine:
-- Your command history never leaves your computer
-- Ollama runs locally without external API calls
-- Sensitive data is automatically scrubbed before AI processing
-- No telemetry, no tracking, no cloud services
+The repository has two main runtime components:
 
-## 🤝 Contributing
+- [zsh-smart-history.plugin.zsh](zsh-smart-history.plugin.zsh) defines the widget, keybinding, selection menu, and user-facing behavior.
+- [lib/zsh_smart_history.py](lib/zsh_smart_history.py) parses history, removes noise, sanitizes secrets, ranks fallback suggestions, and queries Ollama.
 
-Contributions are welcome! Please feel free to submit a Pull Request. See [TODO.md](TODO.md) for the development roadmap.
+The helper also exposes a `compact` subcommand for inspecting the sanitized history summary.
 
-## 📄 License
+```bash
+python3 lib/zsh_smart_history.py compact --history-path ~/.zsh_history
+```
 
-This project is open source and available under the MIT License.
+## Troubleshooting
 
-## 🙏 Acknowledgments
+See [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) for common setup and runtime issues.
 
-- Inspired by [per-directory-history](https://github.com/ohmyzsh/ohmyzsh/tree/master/plugins/per-directory-history)
-- Powered by [Ollama](https://ollama.com/)
-- Built for [Oh My Zsh](https://ohmyz.sh/)
+## Development
+
+Run the checks locally with:
+
+```bash
+python3 -m unittest discover -s tests -p 'test_*.py'
+zsh -n zsh-smart-history.plugin.zsh
+```
+
+CI runs the same checks on GitHub Actions, and the release workflow packages the repository on version tags.
+
+## Roadmap
+
+Active follow-up work lives in [TODO.md](TODO.md).
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## License
+
+This project is available under the MIT License. See [LICENSE](LICENSE).
