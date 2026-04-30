@@ -29,6 +29,7 @@ If `ZSH_SMART_HISTORY_OLLAMA_URL` is unset, the plugin falls back to `OLLAMA_HOS
 | `ZSH_SMART_HISTORY_TIMEOUT` | float | `4` | Request timeout in seconds. |
 | `ZSH_SMART_HISTORY_HISTORY_LIMIT` | integer | `500` | How many recent entries are inspected before compaction. |
 | `ZSH_SMART_HISTORY_MAX_COMMAND_LENGTH` | integer | `300` | Commands longer than this may be dropped as noise. |
+| `ZSH_SMART_HISTORY_COMPACT_CACHE_MAX_AGE` | float | `3600` | Maximum age in seconds for the cached compacted history snapshot. Use `0` to disable the cache. |
 | `ZSH_SMART_HISTORY_PYTHON` | string | `python3` | Use this if Python is not on the default path. |
 | `ZSH_SMART_HISTORY_KEYBIND` | Zsh bindkey sequence | `^@` | Set to an empty string to disable automatic binding. |
 
@@ -36,4 +37,5 @@ If `ZSH_SMART_HISTORY_OLLAMA_URL` is unset, the plugin falls back to `OLLAMA_HOS
 
 - Use a larger timeout for a remote Ollama host.
 - Use a smaller `ZSH_SMART_HISTORY_HISTORY_LIMIT` on very large history files if you want faster responses.
+- Lower `ZSH_SMART_HISTORY_COMPACT_CACHE_MAX_AGE` if your history changes rapidly and you want the compacted snapshot refreshed more aggressively.
 - Pick an explicit alternate keybinding when `Ctrl-Space` is intercepted by your terminal or desktop environment.

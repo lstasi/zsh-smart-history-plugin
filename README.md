@@ -16,6 +16,7 @@ This project does **not** depend on `per-directory-history`, and it is not deriv
 - Interactive ZLE flow: trigger suggestions, cycle with Up/Down, accept with Tab or Enter, cancel with Esc
 - Configurable model, suggestion count, timeout, history depth, keybinding, and Ollama base URL
 - Standard-library-only helper script plus unit tests and GitHub Actions workflows
+- Cached compaction so large history files do not need a full refresh on every request
 
 ## Requirements
 
@@ -65,6 +66,7 @@ All configuration is environment-variable driven.
 | `ZSH_SMART_HISTORY_TIMEOUT` | `4` | Request timeout in seconds. |
 | `ZSH_SMART_HISTORY_HISTORY_LIMIT` | `500` | Number of most recent history entries inspected before compaction. |
 | `ZSH_SMART_HISTORY_MAX_COMMAND_LENGTH` | `300` | Length cutoff used by the noise filter. |
+| `ZSH_SMART_HISTORY_COMPACT_CACHE_MAX_AGE` | `3600` | Maximum age in seconds for the cached compacted history snapshot. Set to `0` to rebuild on every request. |
 | `ZSH_SMART_HISTORY_PYTHON` | `python3` | Python executable used to run the helper script. |
 | `ZSH_SMART_HISTORY_KEYBIND` | `^@` | Key sequence bound to the widget. `^@` is the usual `Ctrl-Space` representation in Zsh. Set it to an empty string to disable automatic binding. |
 
@@ -85,7 +87,7 @@ Privacy note: when you point the plugin to a remote Ollama host, the sanitized c
 ## Usage
 
 1. Press your configured trigger key. The default is `Ctrl-Space`.
-2. The helper compacts history, scrubs sensitive values from both history and the current buffer, and requests suggestions from Ollama.
+2. The helper reuses a recent compacted-history cache when available, otherwise refreshes it from the recent end of `HISTFILE`, then requests suggestions from Ollama.
 3. If multiple suggestions are returned, use Up or Down to cycle through them.
 4. Press Tab or Enter to keep the currently previewed suggestion in the command line.
 5. Press Esc or Ctrl-C to restore the original buffer.
@@ -105,7 +107,7 @@ export ZSH_SMART_HISTORY_KEYBIND='^X^H'
 The repository has two main runtime components:
 
 - [zsh-smart-history.plugin.zsh](zsh-smart-history.plugin.zsh) defines the widget, keybinding, selection menu, and user-facing behavior.
-- [lib/zsh_smart_history.py](lib/zsh_smart_history.py) parses history, removes noise, sanitizes secrets, ranks fallback suggestions, and queries Ollama.
+- [lib/zsh_smart_history.py](lib/zsh_smart_history.py) reads recent history, caches the compacted summary, sanitizes secrets, ranks fallback suggestions, and queries Ollama.
 
 The helper also exposes a `compact` subcommand for inspecting the sanitized history summary.
 

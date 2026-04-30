@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
 import sys
+import time
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
@@ -20,6 +22,10 @@ DEFAULT_SUGGESTION_COUNT = 3
 DEFAULT_HISTORY_LIMIT = 500
 DEFAULT_MAX_COMMAND_LENGTH = 300
 DEFAULT_TIMEOUT_SECONDS = 4.0
+DEFAULT_COMPACT_CACHE_MAX_AGE_SECONDS = 3600.0
+
+COMPACT_CACHE_VERSION = 1
+RECENT_HISTORY_CHUNK_SIZE = 16384
 
 EXTENDED_HISTORY_PATTERN = re.compile(r"^: \d+:\d+;(.*)$")
 NUMBERED_LINE_PATTERN = re.compile(r"^\s*(?:[-*]|\d+[.)])\s*(.+)$")
@@ -87,6 +93,17 @@ def _env_float(name: str, default: float) -> float:
     except ValueError:
         return default
     return parsed if parsed > 0 else default
+
+
+def _env_nonnegative_float(name: str, default: float) -> float:
+    value = os.environ.get(name, "").strip()
+    if not value:
+        return default
+    try:
+        parsed = float(value)
+    except ValueError:
+        return default
+    return parsed if parsed >= 0 else default
 
 
 def normalize_ollama_url(base_url: str) -> str:
@@ -169,6 +186,201 @@ def sanitize_commands(commands: Iterable[str], max_command_length: int) -> list[
         sanitized = sanitize_command(collapsed)
         if sanitized:
             sanitized_commands.append(sanitized)
+    return sanitized_commands
+
+
+def _history_uses_extended_format(history_path: Path) -> bool:
+    with history_path.open("rb") as history_file:
+        snippet = history_file.read(4096).decode("utf-8", errors="ignore")
+
+    for line in snippet.splitlines():
+        if line.strip():
+            return bool(EXTENDED_HISTORY_PATTERN.match(line))
+    return False
+
+
+def load_recent_history(path: str, limit: int) -> list[str]:
+    history_path = Path(path).expanduser()
+    if not history_path.exists():
+        return []
+
+    if limit <= 0:
+        return load_history_file(path)
+
+    uses_extended_history = _history_uses_extended_format(history_path)
+
+    with history_path.open("rb") as history_file:
+        history_file.seek(0, os.SEEK_END)
+        position = history_file.tell()
+        buffer = b""
+
+        while position > 0:
+            read_size = min(RECENT_HISTORY_CHUNK_SIZE, position)
+            position -= read_size
+            history_file.seek(position)
+            buffer = history_file.read(read_size) + buffer
+
+            lines = buffer.decode("utf-8", errors="ignore").splitlines(True)
+            if not lines:
+                continue
+
+            if uses_extended_history:
+                marker_count = sum(1 for line in lines if EXTENDED_HISTORY_PATTERN.match(line.rstrip("\n")))
+                if marker_count < limit and position > 0:
+                    continue
+
+                if position > 0:
+                    first_complete_index = next(
+                        (
+                            index
+                            for index, line in enumerate(lines)
+                            if EXTENDED_HISTORY_PATTERN.match(line.rstrip("\n"))
+                        ),
+                        None,
+                    )
+                    if first_complete_index is None:
+                        continue
+                    lines = lines[first_complete_index:]
+            else:
+                complete_line_count = len(lines) - 1 if position > 0 else len(lines)
+                if complete_line_count < limit and position > 0:
+                    continue
+
+                if position > 0:
+                    lines = lines[1:]
+
+            return parse_history_lines(lines)[-limit:]
+
+    return []
+
+
+def _cache_root() -> Path:
+    cache_base = Path(os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache"))).expanduser()
+    return cache_base / "zsh-smart-history"
+
+
+def _cache_path_for_history(history_path: Path) -> Path:
+    digest = hashlib.sha256(str(history_path).encode("utf-8")).hexdigest()[:16]
+    return _cache_root() / f"compact-history-{digest}.json"
+
+
+def _history_signature(history_path: Path) -> dict[str, int | str]:
+    stat_result = history_path.stat()
+    mtime_ns = getattr(stat_result, "st_mtime_ns", int(stat_result.st_mtime * 1_000_000_000))
+    return {
+        "history_path": str(history_path),
+        "history_size": stat_result.st_size,
+        "history_mtime_ns": mtime_ns,
+        "history_inode": getattr(stat_result, "st_ino", 0),
+        "history_device": getattr(stat_result, "st_dev", 0),
+    }
+
+
+def _load_compaction_cache(
+    history_path: Path,
+    history_limit: int,
+    max_command_length: int,
+    compact_cache_max_age: float,
+) -> list[str] | None:
+    if compact_cache_max_age <= 0:
+        return None
+
+    cache_path = _cache_path_for_history(history_path)
+    if not cache_path.exists():
+        return None
+
+    try:
+        with cache_path.open("r", encoding="utf-8") as cache_file:
+            payload = json.load(cache_file)
+    except (OSError, ValueError, TypeError):
+        return None
+
+    if payload.get("version") != COMPACT_CACHE_VERSION:
+        return None
+    if payload.get("history_limit") != history_limit:
+        return None
+    if payload.get("max_command_length") != max_command_length:
+        return None
+
+    refreshed_at = payload.get("refreshed_at")
+    if not isinstance(refreshed_at, (int, float)):
+        return None
+    if time.time() - float(refreshed_at) > compact_cache_max_age:
+        return None
+
+    try:
+        signature = _history_signature(history_path)
+    except OSError:
+        return None
+
+    for key, value in signature.items():
+        if payload.get(key) != value:
+            return None
+
+    cached_commands = payload.get("sanitized_commands")
+    if not isinstance(cached_commands, list) or not all(isinstance(command, str) for command in cached_commands):
+        return None
+
+    return cached_commands
+
+
+def _write_compaction_cache(
+    history_path: Path,
+    history_limit: int,
+    max_command_length: int,
+    sanitized_commands: list[str],
+) -> None:
+    cache_path = _cache_path_for_history(history_path)
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+
+    payload = {
+        "version": COMPACT_CACHE_VERSION,
+        "history_limit": history_limit,
+        "max_command_length": max_command_length,
+        "refreshed_at": time.time(),
+        **_history_signature(history_path),
+        "sanitized_commands": sanitized_commands,
+    }
+
+    temp_path = cache_path.with_suffix(f"{cache_path.suffix}.tmp")
+    with temp_path.open("w", encoding="utf-8") as cache_file:
+        json.dump(payload, cache_file)
+    temp_path.replace(cache_path)
+
+
+def load_compacted_history(
+    history_path: str,
+    history_limit: int,
+    max_command_length: int,
+    compact_cache_max_age: float,
+) -> list[str]:
+    expanded_history_path = Path(history_path).expanduser()
+    if not expanded_history_path.exists():
+        return []
+
+    resolved_history_path = expanded_history_path.resolve()
+    cached_commands = _load_compaction_cache(
+        resolved_history_path,
+        history_limit,
+        max_command_length,
+        compact_cache_max_age,
+    )
+    if cached_commands is not None:
+        return cached_commands
+
+    commands = load_recent_history(str(resolved_history_path), history_limit)
+    sanitized_commands = sanitize_commands(commands, max_command_length)
+
+    try:
+        _write_compaction_cache(
+            resolved_history_path,
+            history_limit,
+            max_command_length,
+            sanitized_commands,
+        )
+    except OSError:
+        pass
+
     return sanitized_commands
 
 
@@ -343,12 +555,14 @@ def suggest(
     timeout_seconds: float,
     history_limit: int,
     max_command_length: int,
+    compact_cache_max_age: float,
 ) -> list[str]:
-    commands = load_history_file(history_path)
-    if history_limit > 0:
-        commands = commands[-history_limit:]
-
-    sanitized_commands = sanitize_commands(commands, max_command_length)
+    sanitized_commands = load_compacted_history(
+        history_path,
+        history_limit,
+        max_command_length,
+        compact_cache_max_age,
+    )
     stats = build_command_stats(sanitized_commands)
     fallback = fallback_suggestions(stats, current_buffer, cwd, count)
 
@@ -365,11 +579,18 @@ def suggest(
     return merge_suggestions(ollama_suggestions, fallback, count)
 
 
-def _compact_output(history_path: str, history_limit: int, max_command_length: int) -> str:
-    commands = load_history_file(history_path)
-    if history_limit > 0:
-        commands = commands[-history_limit:]
-    sanitized_commands = sanitize_commands(commands, max_command_length)
+def _compact_output(
+    history_path: str,
+    history_limit: int,
+    max_command_length: int,
+    compact_cache_max_age: float,
+) -> str:
+    sanitized_commands = load_compacted_history(
+        history_path,
+        history_limit,
+        max_command_length,
+        compact_cache_max_age,
+    )
     stats = sorted(
         build_command_stats(sanitized_commands),
         key=lambda stat: (stat.count, stat.last_seen),
@@ -401,11 +622,27 @@ def build_parser() -> argparse.ArgumentParser:
     suggest_parser.add_argument("--timeout", type=float, default=_env_float("ZSH_SMART_HISTORY_TIMEOUT", DEFAULT_TIMEOUT_SECONDS))
     suggest_parser.add_argument("--history-limit", type=int, default=_env_int("ZSH_SMART_HISTORY_HISTORY_LIMIT", DEFAULT_HISTORY_LIMIT))
     suggest_parser.add_argument("--max-command-length", type=int, default=_env_int("ZSH_SMART_HISTORY_MAX_COMMAND_LENGTH", DEFAULT_MAX_COMMAND_LENGTH))
+    suggest_parser.add_argument(
+        "--compact-cache-max-age",
+        type=float,
+        default=_env_nonnegative_float(
+            "ZSH_SMART_HISTORY_COMPACT_CACHE_MAX_AGE",
+            DEFAULT_COMPACT_CACHE_MAX_AGE_SECONDS,
+        ),
+    )
 
     compact_parser = subparsers.add_parser("compact", help="Inspect compacted history.")
     compact_parser.add_argument("--history-path", default=os.environ.get("HISTFILE", str(Path.home() / ".zsh_history")))
     compact_parser.add_argument("--history-limit", type=int, default=_env_int("ZSH_SMART_HISTORY_HISTORY_LIMIT", DEFAULT_HISTORY_LIMIT))
     compact_parser.add_argument("--max-command-length", type=int, default=_env_int("ZSH_SMART_HISTORY_MAX_COMMAND_LENGTH", DEFAULT_MAX_COMMAND_LENGTH))
+    compact_parser.add_argument(
+        "--compact-cache-max-age",
+        type=float,
+        default=_env_nonnegative_float(
+            "ZSH_SMART_HISTORY_COMPACT_CACHE_MAX_AGE",
+            DEFAULT_COMPACT_CACHE_MAX_AGE_SECONDS,
+        ),
+    )
 
     return parser
 
@@ -415,7 +652,14 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.command == "compact":
-        print(_compact_output(args.history_path, args.history_limit, args.max_command_length))
+        print(
+            _compact_output(
+                args.history_path,
+                max(1, args.history_limit),
+                max(32, args.max_command_length),
+                max(0.0, args.compact_cache_max_age),
+            )
+        )
         return 0
 
     suggestions = suggest(
@@ -428,6 +672,7 @@ def main(argv: list[str] | None = None) -> int:
         timeout_seconds=args.timeout,
         history_limit=max(1, args.history_limit),
         max_command_length=max(32, args.max_command_length),
+        compact_cache_max_age=max(0.0, args.compact_cache_max_age),
     )
     print("\n".join(suggestions))
     return 0

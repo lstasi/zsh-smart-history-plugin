@@ -30,3 +30,5 @@ Use the helper directly:
 python3 lib/zsh_smart_history.py compact --history-path ~/.zsh_history
 python3 lib/zsh_smart_history.py suggest --history-path ~/.zsh_history --cwd "$PWD" --buffer "git"
 ```
+
+If results seem stale, lower `ZSH_SMART_HISTORY_COMPACT_CACHE_MAX_AGE` or set it to `0` to force a rebuild on each request.

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import tempfile
 import unittest
@@ -100,6 +101,7 @@ class SuggestTest(unittest.TestCase):
                     timeout_seconds=1.0,
                     history_limit=100,
                     max_command_length=300,
+                    compact_cache_max_age=3600,
                 )
 
         self.assertEqual(suggestions[0], "git status")
@@ -132,6 +134,7 @@ class SuggestTest(unittest.TestCase):
                     timeout_seconds=1.0,
                     history_limit=100,
                     max_command_length=300,
+                    compact_cache_max_age=3600,
                 )
 
         self.assertEqual(suggestions, ["git add .", "git status"])
@@ -154,11 +157,79 @@ class SuggestTest(unittest.TestCase):
                     timeout_seconds=1.0,
                     history_limit=100,
                     max_command_length=300,
+                    compact_cache_max_age=3600,
                 )
 
         prompt = call_ollama.call_args.args[2]
         self.assertIn("Authorization: Bearer <redacted>", prompt)
         self.assertNotIn("abc123", prompt)
+
+
+class CompactionCacheTest(unittest.TestCase):
+    def test_load_recent_history_reads_only_tail_entries(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            history_path = Path(tmpdir) / "history"
+            history_path.write_text(
+                "\n".join(
+                    [
+                        ": 1715200000:0;git status",
+                        ": 1715200001:0;git add .",
+                        ": 1715200002:0;git commit -m test",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            commands = zsh_smart_history.load_recent_history(str(history_path), 2)
+
+        self.assertEqual(commands, ["git add .", "git commit -m test"])
+
+    def test_compaction_cache_reuses_fresh_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            history_path = Path(tmpdir) / "history"
+            history_path.write_text(": 1715200000:0;git status\n", encoding="utf-8")
+
+            with patch.dict(os.environ, {"XDG_CACHE_HOME": tmpdir}, clear=False):
+                first = zsh_smart_history.load_compacted_history(str(history_path), 100, 300, 3600)
+
+                with patch("lib.zsh_smart_history.load_recent_history", side_effect=AssertionError("cache miss")):
+                    second = zsh_smart_history.load_compacted_history(str(history_path), 100, 300, 3600)
+
+        self.assertEqual(first, ["git status"])
+        self.assertEqual(second, ["git status"])
+
+    def test_compaction_cache_refreshes_after_history_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            history_path = Path(tmpdir) / "history"
+            history_path.write_text(": 1715200000:0;git status\n", encoding="utf-8")
+
+            with patch.dict(os.environ, {"XDG_CACHE_HOME": tmpdir}, clear=False):
+                first = zsh_smart_history.load_compacted_history(str(history_path), 100, 300, 3600)
+
+                history_path.write_text(
+                    ": 1715200000:0;git status\n: 1715200001:0;git add .\n",
+                    encoding="utf-8",
+                )
+
+                second = zsh_smart_history.load_compacted_history(str(history_path), 100, 300, 3600)
+
+        self.assertEqual(first, ["git status"])
+        self.assertEqual(second, ["git status", "git add ."])
+
+    def test_zero_cache_age_forces_refresh(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            history_path = Path(tmpdir) / "history"
+            history_path.write_text(": 1715200000:0;git status\n", encoding="utf-8")
+
+            with patch.dict(os.environ, {"XDG_CACHE_HOME": tmpdir}, clear=False):
+                zsh_smart_history.load_compacted_history(str(history_path), 100, 300, 3600)
+
+                with patch("lib.zsh_smart_history.load_recent_history", return_value=["git add ."]) as load_recent_history:
+                    refreshed = zsh_smart_history.load_compacted_history(str(history_path), 100, 300, 0)
+
+        self.assertEqual(refreshed, ["git add ."])
+        load_recent_history.assert_called_once()
 
 
 class PluginConfigurationTest(unittest.TestCase):
@@ -186,7 +257,7 @@ class CompactCommandTest(unittest.TestCase):
             history_path = Path(tmpdir) / "history"
             history_path.write_text(": 1715200000:0;git status\n", encoding="utf-8")
 
-            output = zsh_smart_history._compact_output(str(history_path), 100, 300)
+            output = zsh_smart_history._compact_output(str(history_path), 100, 300, 3600)
 
         parsed = json.loads(output)
         self.assertEqual(parsed[0]["command"], "git status")
