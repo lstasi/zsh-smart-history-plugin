@@ -15,8 +15,6 @@ The initial implementation is now in the repository. This backlog tracks follow-
 
 ## Next Enhancements
 
-- [ ] Run the helper asynchronously so slow Ollama responses do not block the prompt
-- [ ] Cache compacted history by `HISTFILE` mtime to cut repeated work
 - [ ] Add more shell-aware validation for suggested commands
 - [ ] Add integration tests that exercise widget behavior in an interactive shell session
 - [ ] Add a screenshot or asciinema demo to the README
@@ -26,4 +24,4 @@ The initial implementation is now in the repository. This backlog tracks follow-
 
 - [ ] Support alternative backends behind the same helper interface
 - [ ] Learn from accepted suggestions locally without storing raw history snapshots
-- [ ] Add an opt-in command to preview the exact prompt payload sent to Ollama
+- [ ] Add an opt-in Langfuse or OpenTelemetry exporter for sanitized request traces

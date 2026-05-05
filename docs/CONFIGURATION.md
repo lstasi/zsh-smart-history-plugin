@@ -31,6 +31,8 @@ If `ZSH_SMART_HISTORY_OLLAMA_URL` is unset, the plugin falls back to `OLLAMA_HOS
 | `ZSH_SMART_HISTORY_MAX_COMMAND_LENGTH` | integer | `300` | Commands longer than this may be dropped as noise. |
 | `ZSH_SMART_HISTORY_COMPACT_CACHE_MAX_AGE` | float | `3600` | Maximum age in seconds for the cached compacted history snapshot. Use `0` to disable the cache. |
 | `ZSH_SMART_HISTORY_PYTHON` | string | `python3` | Use this if Python is not on the default path. |
+| `ZSH_SMART_HISTORY_AUTOSUGGEST_ENABLED` | boolean-ish | `1` | When `zsh-autosuggestions` is loaded, let visible autosuggestions trigger a parallel smart-history request. |
+| `ZSH_SMART_HISTORY_GUIDANCE_PROMPT` | string | unset | Extra instructions appended to the model prompt. Supports multi-line values. |
 | `ZSH_SMART_HISTORY_DEBUG_LOG` | string | unset | Append debug logs from the plugin and helper. Set to `1` to use `~/.cache/zsh-smart-history/debug.log`, or provide an explicit path. |
 | `ZSH_SMART_HISTORY_KEYBIND` | Zsh bindkey sequence | `^@` | Set to an empty string to disable automatic binding. |
 
@@ -39,5 +41,7 @@ If `ZSH_SMART_HISTORY_OLLAMA_URL` is unset, the plugin falls back to `OLLAMA_HOS
 - Use a larger timeout for a remote Ollama host.
 - Use a smaller `ZSH_SMART_HISTORY_HISTORY_LIMIT` on very large history files if you want faster responses.
 - Lower `ZSH_SMART_HISTORY_COMPACT_CACHE_MAX_AGE` if your history changes rapidly and you want the compacted snapshot refreshed more aggressively.
-- Enable `ZSH_SMART_HISTORY_DEBUG_LOG` while debugging widget bindings or Ollama connectivity, then disable it once you are done.
+- Set `ZSH_SMART_HISTORY_GUIDANCE_PROMPT` if you want the model to prefer safer or more repo-specific commands.
+- Set `ZSH_SMART_HISTORY_AUTOSUGGEST_ENABLED=0` if you use `zsh-autosuggestions` but only want the manual `Ctrl-Space` flow.
+- Enable `ZSH_SMART_HISTORY_DEBUG_LOG` while debugging widget bindings or Ollama connectivity. The log now includes sanitized request and response payloads, so disable it once you are done.
 - Pick an explicit alternate keybinding when `Ctrl-Space` is intercepted by your terminal or desktop environment.

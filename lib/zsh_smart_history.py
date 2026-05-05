@@ -25,6 +25,8 @@ DEFAULT_TIMEOUT_SECONDS = 4.0
 DEFAULT_COMPACT_CACHE_MAX_AGE_SECONDS = 3600.0
 DEBUG_LOG_ENV = "ZSH_SMART_HISTORY_DEBUG_LOG"
 DEBUG_LOG_TRUE_VALUES = {"1", "true", "yes", "on"}
+GUIDANCE_PROMPT_ENV = "ZSH_SMART_HISTORY_GUIDANCE_PROMPT"
+DEBUG_TEXT_PREVIEW_LIMIT = 12000
 
 COMPACT_CACHE_VERSION = 1
 RECENT_HISTORY_CHUNK_SIZE = 16384
@@ -129,6 +131,13 @@ def debug_log(message: str) -> None:
             log_file.write(f"{timestamp} [helper] pid={os.getpid()} {message}\n")
     except OSError:
         return
+
+
+def _preview_debug_text(text: str, limit: int = DEBUG_TEXT_PREVIEW_LIMIT) -> str:
+    normalized = text.replace("\r", "\\r").replace("\n", "\\n")
+    if len(normalized) <= limit:
+        return normalized
+    return f"{normalized[:limit]}...<truncated>"
 
 
 def normalize_ollama_url(base_url: str) -> str:
@@ -502,16 +511,38 @@ def fallback_suggestions(
     return results
 
 
-def build_prompt(stats: Iterable[CommandStat], current_buffer: str, cwd: str, count: int) -> str:
+def build_prompt(
+    compacted_history: Iterable[str],
+    stats: Iterable[CommandStat],
+    current_buffer: str,
+    cwd: str,
+    count: int,
+    guidance_prompt: str,
+) -> str:
     sanitized_buffer = sanitize_command(collapse_command(current_buffer))
+    normalized_guidance = guidance_prompt.strip()
     summary_lines = [
         "You are completing shell commands for a Zsh user.",
         "Return only shell commands, one per line, no numbering, no explanations.",
+        "Prefer commands that naturally continue the current buffer and recent shell activity.",
         f"Current working directory: {cwd}",
         f"Current partially typed command: {sanitized_buffer or '<empty>'}",
         f"Return at most {count} commands.",
-        "History summary (most relevant commands with count and recency):",
     ]
+
+    if normalized_guidance:
+        summary_lines.append("Additional guidance:")
+        summary_lines.append(normalized_guidance)
+
+    summary_lines.append("Recent compacted history (sanitized, oldest to newest):")
+    compacted_history_list = list(compacted_history)
+    if compacted_history_list:
+        for command in compacted_history_list:
+            summary_lines.append(f"- {command}")
+    else:
+        summary_lines.append("- <empty>")
+
+    summary_lines.append("History summary (most relevant commands with count and recency):")
 
     sorted_stats = sorted(stats, key=lambda stat: (stat.count, stat.last_seen), reverse=True)
     for stat in sorted_stats[:25]:
@@ -522,7 +553,7 @@ def build_prompt(stats: Iterable[CommandStat], current_buffer: str, cwd: str, co
 
 def call_ollama(base_url: str, model: str, prompt: str, timeout_seconds: float) -> str:
     normalized_url = normalize_ollama_url(base_url)
-    payload = json.dumps(
+    request_body = json.dumps(
         {
             "model": model,
             "prompt": prompt,
@@ -530,7 +561,8 @@ def call_ollama(base_url: str, model: str, prompt: str, timeout_seconds: float) 
             "stream": False,
             "options": {"temperature": 0.2},
         }
-    ).encode("utf-8")
+    )
+    payload = request_body.encode("utf-8")
     url = f"{normalized_url}/api/generate"
     req = request.Request(
         url,
@@ -542,6 +574,10 @@ def call_ollama(base_url: str, model: str, prompt: str, timeout_seconds: float) 
     debug_log(
         f"ollama request start url={normalized_url} model={model} timeout={timeout_seconds} "
         f"prompt_chars={len(prompt)}"
+    )
+    debug_log(
+        f"ollama request payload url={normalized_url} model={model} "
+        f"body={_preview_debug_text(request_body)}"
     )
 
     try:
@@ -566,6 +602,9 @@ def call_ollama(base_url: str, model: str, prompt: str, timeout_seconds: float) 
         )
         raise
 
+    debug_log(
+        f"ollama response body url={normalized_url} model={model} body={_preview_debug_text(body)}"
+    )
     response_text = str(parsed.get("response", ""))
     elapsed_ms = int((time.monotonic() - started_at) * 1000)
     debug_log(
@@ -626,6 +665,7 @@ def suggest(
     history_limit: int,
     max_command_length: int,
     compact_cache_max_age: float,
+    guidance_prompt: str = "",
 ) -> list[str]:
     debug_log(
         f"suggest start cwd={cwd} buffer_chars={len(current_buffer)} count={count} "
@@ -640,14 +680,15 @@ def suggest(
     stats = build_command_stats(sanitized_commands)
     fallback = fallback_suggestions(stats, current_buffer, cwd, count)
     debug_log(
-        f"suggest prepared stats={len(stats)} fallback_candidates={len(fallback)}"
+        f"suggest prepared compacted_commands={len(sanitized_commands)} stats={len(stats)} "
+        f"fallback_candidates={len(fallback)} guidance_chars={len(guidance_prompt.strip())}"
     )
 
     if not stats:
         debug_log(f"suggest return reason=no-history suggestions={len(fallback)}")
         return fallback
 
-    prompt = build_prompt(stats, current_buffer, cwd, count)
+    prompt = build_prompt(sanitized_commands, stats, current_buffer, cwd, count, guidance_prompt)
     try:
         ollama_text = call_ollama(ollama_url, model, prompt, timeout_seconds)
     except (OSError, ValueError, error.HTTPError, error.URLError, TimeoutError) as exc:
@@ -717,6 +758,10 @@ def build_parser() -> argparse.ArgumentParser:
             DEFAULT_COMPACT_CACHE_MAX_AGE_SECONDS,
         ),
     )
+    suggest_parser.add_argument(
+        "--guidance-prompt",
+        default=os.environ.get(GUIDANCE_PROMPT_ENV, ""),
+    )
 
     compact_parser = subparsers.add_parser("compact", help="Inspect compacted history.")
     compact_parser.add_argument("--history-path", default=os.environ.get("HISTFILE", str(Path.home() / ".zsh_history")))
@@ -760,6 +805,7 @@ def main(argv: list[str] | None = None) -> int:
         history_limit=max(1, args.history_limit),
         max_command_length=max(32, args.max_command_length),
         compact_cache_max_age=max(0.0, args.compact_cache_max_age),
+        guidance_prompt=args.guidance_prompt,
     )
     print("\n".join(suggestions))
     return 0

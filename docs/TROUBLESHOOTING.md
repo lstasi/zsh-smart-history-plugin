@@ -22,6 +22,12 @@
 - Confirm the URL includes the right port and scheme.
 - If the helper falls back to history-only suggestions, the widget still works, but you are no longer getting model-generated results.
 
+## `zsh-autosuggestions` Shows, But Smart History Does Not Refresh
+
+- Make sure `zsh-autosuggestions` is loaded before `zsh-smart-history` in your `plugins=(...)` list.
+- Confirm `ZSH_SMART_HISTORY_AUTOSUGGEST_ENABLED` is not set to `0`, `false`, `no`, or `off`.
+- If you want to force only the manual flow, disable the bridge explicitly and use the smart-history keybinding instead.
+
 ## I Want to Inspect What the Helper Is Doing
 
 Use the helper directly:
@@ -44,6 +50,8 @@ export ZSH_SMART_HISTORY_DEBUG_LOG=1
 That writes logs to `~/.cache/zsh-smart-history/debug.log`. You can also provide an explicit path instead of `1`.
 
 The log includes plugin trigger activity, helper invocation, compaction cache behavior, Ollama request start or finish, and fallback reasons. It does not include the raw prompt or full history contents.
+
+The log now also includes the sanitized JSON request payload sent to Ollama and the sanitized response body received back. Because the request payload contains sanitized compacted history and the current sanitized buffer, keep the log local and rotate or remove it after debugging.
 
 Tail the log while testing the widget:
 

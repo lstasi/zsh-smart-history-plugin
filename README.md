@@ -2,21 +2,23 @@
 
 `zsh-smart-history` is an Oh My Zsh plugin that turns your recent Zsh history into command suggestions powered by Ollama.
 
-It reads your normal `HISTFILE`, removes noise, scrubs common secrets, keeps the most relevant commands, and combines that compacted history with your current working directory and a sanitized version of the text already in your prompt. By default it talks to a local Ollama instance, but you can point it at an external Ollama host with an environment variable.
+It reads your normal `HISTFILE`, removes noise, scrubs common secrets, keeps the most relevant commands, and combines that compacted history with your current working directory, a sanitized version of the text already in your prompt, and an optional custom guidance prompt. By default it talks to a local Ollama instance, but you can point it at an external Ollama host with an environment variable.
 
 This project does **not** depend on `per-directory-history`, and it is not derived from that plugin.
 
 ## Features
 
 - AI-backed command suggestions from your recent shell history
+- Compatible with `zsh-autosuggestions`: immediate autosuggestions stay visible while a smarter LLM suggestion is fetched in the background
 - Secret scrubbing for common tokens, passwords, bearer headers, AWS env vars, and URL credentials
 - Noise filtering for large pastes, dumps, and obviously non-command history entries
 - Current-directory context without a custom per-directory history store
 - Graceful fallback to history-only ranking when Ollama is unavailable
 - Interactive ZLE flow: trigger suggestions, cycle with Up/Down, accept with Tab or Enter, cancel with Esc
-- Configurable model, suggestion count, timeout, history depth, keybinding, and Ollama base URL
+- Configurable model, suggestion count, timeout, history depth, keybinding, Ollama base URL, autosuggestion bridge, and custom prompt guidance
 - Standard-library-only helper script plus unit tests and GitHub Actions workflows
 - Cached compaction so large history files do not need a full refresh on every request
+- Non-blocking helper execution so slow model responses do not freeze the shell prompt
 
 ## Requirements
 
@@ -68,6 +70,8 @@ All configuration is environment-variable driven.
 | `ZSH_SMART_HISTORY_MAX_COMMAND_LENGTH` | `300` | Length cutoff used by the noise filter. |
 | `ZSH_SMART_HISTORY_COMPACT_CACHE_MAX_AGE` | `3600` | Maximum age in seconds for the cached compacted history snapshot. Set to `0` to rebuild on every request. |
 | `ZSH_SMART_HISTORY_PYTHON` | `python3` | Python executable used to run the helper script. |
+| `ZSH_SMART_HISTORY_AUTOSUGGEST_ENABLED` | `1` | When `zsh-autosuggestions` is installed, let visible autosuggestions trigger a background smart-history request. |
+| `ZSH_SMART_HISTORY_GUIDANCE_PROMPT` | unset | Extra prompt text sent to the helper to steer the LLM toward your preferred command style. |
 | `ZSH_SMART_HISTORY_DEBUG_LOG` | unset | When set, append debug logs from the widget and helper. Use `1` to log to `~/.cache/zsh-smart-history/debug.log` or provide an explicit path. |
 | `ZSH_SMART_HISTORY_KEYBIND` | `^@` | Key sequence bound to the widget. `^@` is the usual `Ctrl-Space` representation in Zsh. Set it to an empty string to disable automatic binding. |
 
@@ -83,17 +87,33 @@ export ZSH_SMART_HISTORY_OLLAMA_URL="https://ollama.internal.example.com:11434"
 
 If you omit the scheme and set `host:port`, the helper automatically normalizes it to `http://host:port`.
 
-Privacy note: when you point the plugin to a remote Ollama host, the sanitized compacted history summary and sanitized current buffer leave your machine and are sent to that host.
+Privacy note: when you point the plugin to a remote Ollama host, the sanitized compacted history, sanitized current buffer, and optional guidance prompt leave your machine and are sent to that host.
 
 ## Usage
 
 1. Press your configured trigger key. The default is `Ctrl-Space`.
-2. The helper reuses a recent compacted-history cache when available, otherwise refreshes it from the recent end of `HISTFILE`, then requests suggestions from Ollama.
+2. The helper reuses a recent compacted-history cache when available, otherwise refreshes it from the recent end of `HISTFILE`, then requests suggestions from Ollama without blocking the prompt.
 3. If multiple suggestions are returned, use Up or Down to cycle through them.
 4. Press Tab or Enter to keep the currently previewed suggestion in the command line.
 5. Press Esc or Ctrl-C to restore the original buffer.
 
 The widget never executes the suggested command automatically.
+
+### `zsh-autosuggestions` Integration
+
+If `zsh-autosuggestions` is loaded, its normal inline suggestion continues to appear immediately. While that suggestion is visible, `zsh-smart-history` can issue its own background LLM request in parallel and replace the inline suggestion once the smarter result arrives.
+
+Disable that bridge if you only want the manual widget flow:
+
+```zsh
+export ZSH_SMART_HISTORY_AUTOSUGGEST_ENABLED=0
+```
+
+You can also steer the LLM with an extra instruction block:
+
+```zsh
+export ZSH_SMART_HISTORY_GUIDANCE_PROMPT=$'Prefer safe read-only commands first.\nPrefer repo-local tooling over global commands.'
+```
 
 ### Suggested Keybinding Override
 
@@ -107,8 +127,8 @@ export ZSH_SMART_HISTORY_KEYBIND='^X^H'
 
 The repository has two main runtime components:
 
-- [zsh-smart-history.plugin.zsh](zsh-smart-history.plugin.zsh) defines the widget, keybinding, selection menu, and user-facing behavior.
-- [lib/zsh_smart_history.py](lib/zsh_smart_history.py) reads recent history, caches the compacted summary, sanitizes secrets, ranks fallback suggestions, and queries Ollama.
+- [zsh-smart-history.plugin.zsh](zsh-smart-history.plugin.zsh) defines the widget, keybinding, autosuggestion bridge, async request flow, selection menu, and user-facing behavior.
+- [lib/zsh_smart_history.py](lib/zsh_smart_history.py) reads recent history, caches the compacted summary, sanitizes secrets, builds the prompt payload, ranks fallback suggestions, and queries Ollama.
 
 The helper also exposes a `compact` subcommand for inspecting the sanitized history summary.
 
@@ -128,7 +148,7 @@ That writes logs to `~/.cache/zsh-smart-history/debug.log`. You can also set a c
 export ZSH_SMART_HISTORY_DEBUG_LOG="$HOME/.zsh-smart-history.log"
 ```
 
-The log records trigger activity, helper execution, cache behavior, Ollama request start or finish, and fallback reasons. It does not write the raw prompt or full history contents.
+The log records trigger activity, helper execution, cache behavior, Ollama request start or finish, fallback reasons, and the sanitized request and response payloads sent to Ollama. Because the prompt includes sanitized compacted history, keep this log local and disable it when you are done debugging.
 
 ## Troubleshooting
 

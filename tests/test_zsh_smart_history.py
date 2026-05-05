@@ -164,6 +164,43 @@ class SuggestTest(unittest.TestCase):
         self.assertIn("Authorization: Bearer <redacted>", prompt)
         self.assertNotIn("abc123", prompt)
 
+    def test_prompt_includes_compacted_history_and_guidance(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            history_path = Path(tmpdir) / "history"
+            history_path.write_text(
+                "\n".join(
+                    [
+                        ": 1715200000:0;git status",
+                        ": 1715200001:0;git commit -m test",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            with patch("lib.zsh_smart_history.call_ollama") as call_ollama:
+                call_ollama.return_value = ""
+
+                zsh_smart_history.suggest(
+                    history_path=str(history_path),
+                    cwd=tmpdir,
+                    current_buffer="git c",
+                    count=3,
+                    model="codellama",
+                    ollama_url="http://127.0.0.1:11434",
+                    timeout_seconds=1.0,
+                    history_limit=100,
+                    max_command_length=300,
+                    compact_cache_max_age=3600,
+                    guidance_prompt="Prefer safe read-only commands first.",
+                )
+
+        prompt = call_ollama.call_args.args[2]
+        self.assertIn("Recent compacted history", prompt)
+        self.assertIn("git status", prompt)
+        self.assertIn("git commit -m test", prompt)
+        self.assertIn("Prefer safe read-only commands first.", prompt)
+
 
 class DebugLogTest(unittest.TestCase):
     def test_call_ollama_writes_request_lifecycle_log(self) -> None:
@@ -178,12 +215,15 @@ class DebugLogTest(unittest.TestCase):
                 with patch("lib.zsh_smart_history.request.urlopen", return_value=response):
                     result = zsh_smart_history.call_ollama("127.0.0.1:11434", "codellama", "prompt", 1.0)
 
-        self.assertEqual(result, "git status")
-        log_contents = log_path.read_text(encoding="utf-8")
-        self.assertIn("ollama request start", log_contents)
-        self.assertIn("url=http://127.0.0.1:11434", log_contents)
-        self.assertIn("ollama request done", log_contents)
-        self.assertIn("response_chars=10", log_contents)
+            self.assertEqual(result, "git status")
+            log_contents = log_path.read_text(encoding="utf-8")
+            self.assertIn("ollama request start", log_contents)
+            self.assertIn("url=http://127.0.0.1:11434", log_contents)
+            self.assertIn("ollama request payload", log_contents)
+            self.assertIn('"prompt": "prompt"', log_contents)
+            self.assertIn("ollama response body", log_contents)
+            self.assertIn("ollama request done", log_contents)
+            self.assertIn("response_chars=10", log_contents)
 
     def test_suggest_logs_fallback_after_ollama_error(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -223,11 +263,11 @@ class DebugLogTest(unittest.TestCase):
                         compact_cache_max_age=3600,
                     )
 
-        self.assertEqual(suggestions, ["git add .", "git status"])
-        log_contents = log_path.read_text(encoding="utf-8")
-        self.assertIn("suggest start", log_contents)
-        self.assertIn("compaction cache=write", log_contents)
-        self.assertIn("suggest return reason=ollama-fallback", log_contents)
+            self.assertEqual(suggestions, ["git add .", "git status"])
+            log_contents = log_path.read_text(encoding="utf-8")
+            self.assertIn("suggest start", log_contents)
+            self.assertIn("compaction cache=write", log_contents)
+            self.assertIn("suggest return reason=ollama-fallback", log_contents)
 
 
 class CompactionCacheTest(unittest.TestCase):
