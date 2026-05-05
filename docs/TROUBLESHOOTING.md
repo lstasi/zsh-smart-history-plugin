@@ -32,3 +32,21 @@ python3 lib/zsh_smart_history.py suggest --history-path ~/.zsh_history --cwd "$P
 ```
 
 If results seem stale, lower `ZSH_SMART_HISTORY_COMPACT_CACHE_MAX_AGE` or set it to `0` to force a rebuild on each request.
+
+## I Want Debug Logs
+
+Enable file-backed debug logging before `source $ZSH/oh-my-zsh.sh`:
+
+```zsh
+export ZSH_SMART_HISTORY_DEBUG_LOG=1
+```
+
+That writes logs to `~/.cache/zsh-smart-history/debug.log`. You can also provide an explicit path instead of `1`.
+
+The log includes plugin trigger activity, helper invocation, compaction cache behavior, Ollama request start or finish, and fallback reasons. It does not include the raw prompt or full history contents.
+
+Tail the log while testing the widget:
+
+```bash
+tail -f ~/.cache/zsh-smart-history/debug.log
+```

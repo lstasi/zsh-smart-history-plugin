@@ -68,6 +68,7 @@ All configuration is environment-variable driven.
 | `ZSH_SMART_HISTORY_MAX_COMMAND_LENGTH` | `300` | Length cutoff used by the noise filter. |
 | `ZSH_SMART_HISTORY_COMPACT_CACHE_MAX_AGE` | `3600` | Maximum age in seconds for the cached compacted history snapshot. Set to `0` to rebuild on every request. |
 | `ZSH_SMART_HISTORY_PYTHON` | `python3` | Python executable used to run the helper script. |
+| `ZSH_SMART_HISTORY_DEBUG_LOG` | unset | When set, append debug logs from the widget and helper. Use `1` to log to `~/.cache/zsh-smart-history/debug.log` or provide an explicit path. |
 | `ZSH_SMART_HISTORY_KEYBIND` | `^@` | Key sequence bound to the widget. `^@` is the usual `Ctrl-Space` representation in Zsh. Set it to an empty string to disable automatic binding. |
 
 More examples are in [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
@@ -114,6 +115,20 @@ The helper also exposes a `compact` subcommand for inspecting the sanitized hist
 ```bash
 python3 lib/zsh_smart_history.py compact --history-path ~/.zsh_history
 ```
+
+To inspect widget activity and Ollama calls, enable the optional debug log before `source $ZSH/oh-my-zsh.sh`.
+
+```zsh
+export ZSH_SMART_HISTORY_DEBUG_LOG=1
+```
+
+That writes logs to `~/.cache/zsh-smart-history/debug.log`. You can also set a custom path instead.
+
+```zsh
+export ZSH_SMART_HISTORY_DEBUG_LOG="$HOME/.zsh-smart-history.log"
+```
+
+The log records trigger activity, helper execution, cache behavior, Ollama request start or finish, and fallback reasons. It does not write the raw prompt or full history contents.
 
 ## Troubleshooting
 

@@ -23,6 +23,8 @@ DEFAULT_HISTORY_LIMIT = 500
 DEFAULT_MAX_COMMAND_LENGTH = 300
 DEFAULT_TIMEOUT_SECONDS = 4.0
 DEFAULT_COMPACT_CACHE_MAX_AGE_SECONDS = 3600.0
+DEBUG_LOG_ENV = "ZSH_SMART_HISTORY_DEBUG_LOG"
+DEBUG_LOG_TRUE_VALUES = {"1", "true", "yes", "on"}
 
 COMPACT_CACHE_VERSION = 1
 RECENT_HISTORY_CHUNK_SIZE = 16384
@@ -104,6 +106,29 @@ def _env_nonnegative_float(name: str, default: float) -> float:
     except ValueError:
         return default
     return parsed if parsed >= 0 else default
+
+
+def _debug_log_path() -> Path | None:
+    configured_path = os.environ.get(DEBUG_LOG_ENV, "").strip()
+    if not configured_path:
+        return None
+    if configured_path.lower() in DEBUG_LOG_TRUE_VALUES:
+        return _cache_root() / "debug.log"
+    return Path(configured_path).expanduser()
+
+
+def debug_log(message: str) -> None:
+    log_path = _debug_log_path()
+    if log_path is None:
+        return
+
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        timestamp = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+        with log_path.open("a", encoding="utf-8") as log_file:
+            log_file.write(f"{timestamp} [helper] pid={os.getpid()} {message}\n")
+    except OSError:
+        return
 
 
 def normalize_ollama_url(base_url: str) -> str:
@@ -356,6 +381,7 @@ def load_compacted_history(
 ) -> list[str]:
     expanded_history_path = Path(history_path).expanduser()
     if not expanded_history_path.exists():
+        debug_log(f"compaction skipped reason=missing-history history_path={expanded_history_path}")
         return []
 
     resolved_history_path = expanded_history_path.resolve()
@@ -366,7 +392,14 @@ def load_compacted_history(
         compact_cache_max_age,
     )
     if cached_commands is not None:
+        debug_log(
+            f"compaction cache=hit history_path={resolved_history_path} commands={len(cached_commands)}"
+        )
         return cached_commands
+
+    debug_log(
+        f"compaction cache=miss history_path={resolved_history_path} history_limit={history_limit}"
+    )
 
     commands = load_recent_history(str(resolved_history_path), history_limit)
     sanitized_commands = sanitize_commands(commands, max_command_length)
@@ -378,8 +411,14 @@ def load_compacted_history(
             max_command_length,
             sanitized_commands,
         )
-    except OSError:
-        pass
+        debug_log(
+            f"compaction cache=write history_path={resolved_history_path} commands={len(sanitized_commands)}"
+        )
+    except OSError as exc:
+        debug_log(
+            f"compaction cache=write-failed history_path={resolved_history_path} "
+            f"error={exc.__class__.__name__}: {exc}"
+        )
 
     return sanitized_commands
 
@@ -499,10 +538,41 @@ def call_ollama(base_url: str, model: str, prompt: str, timeout_seconds: float) 
         headers={"Content-Type": "application/json"},
         method="POST",
     )
-    with request.urlopen(req, timeout=timeout_seconds) as response:
-        body = response.read().decode("utf-8")
-    parsed = json.loads(body)
-    return str(parsed.get("response", ""))
+    started_at = time.monotonic()
+    debug_log(
+        f"ollama request start url={normalized_url} model={model} timeout={timeout_seconds} "
+        f"prompt_chars={len(prompt)}"
+    )
+
+    try:
+        with request.urlopen(req, timeout=timeout_seconds) as response:
+            status_code = getattr(response, "status", "unknown")
+            body = response.read().decode("utf-8")
+    except Exception as exc:
+        elapsed_ms = int((time.monotonic() - started_at) * 1000)
+        debug_log(
+            f"ollama request failed url={normalized_url} model={model} elapsed_ms={elapsed_ms} "
+            f"error={exc.__class__.__name__}: {exc}"
+        )
+        raise
+
+    try:
+        parsed = json.loads(body)
+    except ValueError as exc:
+        elapsed_ms = int((time.monotonic() - started_at) * 1000)
+        debug_log(
+            f"ollama response parse-failed url={normalized_url} model={model} elapsed_ms={elapsed_ms} "
+            f"error={exc.__class__.__name__}: {exc}"
+        )
+        raise
+
+    response_text = str(parsed.get("response", ""))
+    elapsed_ms = int((time.monotonic() - started_at) * 1000)
+    debug_log(
+        f"ollama request done url={normalized_url} model={model} status={status_code} "
+        f"elapsed_ms={elapsed_ms} response_chars={len(response_text)}"
+    )
+    return response_text
 
 
 def parse_ollama_suggestions(text: str, count: int) -> list[str]:
@@ -557,6 +627,10 @@ def suggest(
     max_command_length: int,
     compact_cache_max_age: float,
 ) -> list[str]:
+    debug_log(
+        f"suggest start cwd={cwd} buffer_chars={len(current_buffer)} count={count} "
+        f"history_limit={history_limit}"
+    )
     sanitized_commands = load_compacted_history(
         history_path,
         history_limit,
@@ -565,18 +639,31 @@ def suggest(
     )
     stats = build_command_stats(sanitized_commands)
     fallback = fallback_suggestions(stats, current_buffer, cwd, count)
+    debug_log(
+        f"suggest prepared stats={len(stats)} fallback_candidates={len(fallback)}"
+    )
 
     if not stats:
+        debug_log(f"suggest return reason=no-history suggestions={len(fallback)}")
         return fallback
 
     prompt = build_prompt(stats, current_buffer, cwd, count)
     try:
         ollama_text = call_ollama(ollama_url, model, prompt, timeout_seconds)
-    except (OSError, ValueError, error.HTTPError, error.URLError, TimeoutError):
+    except (OSError, ValueError, error.HTTPError, error.URLError, TimeoutError) as exc:
+        debug_log(
+            f"suggest return reason=ollama-fallback suggestions={len(fallback)} "
+            f"error={exc.__class__.__name__}: {exc}"
+        )
         return fallback
 
     ollama_suggestions = parse_ollama_suggestions(ollama_text, count)
-    return merge_suggestions(ollama_suggestions, fallback, count)
+    merged = merge_suggestions(ollama_suggestions, fallback, count)
+    debug_log(
+        f"suggest return reason=merged ollama_candidates={len(ollama_suggestions)} "
+        f"fallback_candidates={len(fallback)} suggestions={len(merged)}"
+    )
+    return merged
 
 
 def _compact_output(

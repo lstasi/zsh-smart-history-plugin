@@ -6,7 +6,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from lib import zsh_smart_history
 
@@ -163,6 +163,71 @@ class SuggestTest(unittest.TestCase):
         prompt = call_ollama.call_args.args[2]
         self.assertIn("Authorization: Bearer <redacted>", prompt)
         self.assertNotIn("abc123", prompt)
+
+
+class DebugLogTest(unittest.TestCase):
+    def test_call_ollama_writes_request_lifecycle_log(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            log_path = Path(tmpdir) / "debug.log"
+            response = MagicMock()
+            response.__enter__.return_value = response
+            response.read.return_value = b'{"response":"git status"}'
+            response.status = 200
+
+            with patch.dict(os.environ, {"ZSH_SMART_HISTORY_DEBUG_LOG": str(log_path)}, clear=False):
+                with patch("lib.zsh_smart_history.request.urlopen", return_value=response):
+                    result = zsh_smart_history.call_ollama("127.0.0.1:11434", "codellama", "prompt", 1.0)
+
+        self.assertEqual(result, "git status")
+        log_contents = log_path.read_text(encoding="utf-8")
+        self.assertIn("ollama request start", log_contents)
+        self.assertIn("url=http://127.0.0.1:11434", log_contents)
+        self.assertIn("ollama request done", log_contents)
+        self.assertIn("response_chars=10", log_contents)
+
+    def test_suggest_logs_fallback_after_ollama_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            history_path = Path(tmpdir) / "history"
+            log_path = Path(tmpdir) / "debug.log"
+            history_path.write_text(
+                "\n".join(
+                    [
+                        ": 1715200000:0;git status",
+                        ": 1715200001:0;git status",
+                        ": 1715200002:0;git add .",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            with patch.dict(
+                os.environ,
+                {
+                    "ZSH_SMART_HISTORY_DEBUG_LOG": str(log_path),
+                    "XDG_CACHE_HOME": tmpdir,
+                },
+                clear=False,
+            ):
+                with patch("lib.zsh_smart_history.call_ollama", side_effect=OSError("boom")):
+                    suggestions = zsh_smart_history.suggest(
+                        history_path=str(history_path),
+                        cwd=tmpdir,
+                        current_buffer="git",
+                        count=2,
+                        model="codellama",
+                        ollama_url="http://127.0.0.1:11434",
+                        timeout_seconds=1.0,
+                        history_limit=100,
+                        max_command_length=300,
+                        compact_cache_max_age=3600,
+                    )
+
+        self.assertEqual(suggestions, ["git add .", "git status"])
+        log_contents = log_path.read_text(encoding="utf-8")
+        self.assertIn("suggest start", log_contents)
+        self.assertIn("compaction cache=write", log_contents)
+        self.assertIn("suggest return reason=ollama-fallback", log_contents)
 
 
 class CompactionCacheTest(unittest.TestCase):
