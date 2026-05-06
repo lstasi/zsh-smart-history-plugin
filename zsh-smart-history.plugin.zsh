@@ -106,7 +106,7 @@ _zsh_smart_history_cancel_async_request() {
 
   if [[ -n "${_zsh_smart_history_async_fd}" ]] && { true <&$_zsh_smart_history_async_fd } 2>/dev/null; then
     zle -F "${_zsh_smart_history_async_fd}" 2>/dev/null || true
-    builtin exec {_zsh_smart_history_async_fd}<&-
+    builtin exec {_zsh_smart_history_async_fd}<&- 2>/dev/null || true
   fi
 
   if [[ -n "${_zsh_smart_history_async_child_pid}" ]]; then
@@ -199,10 +199,15 @@ _zsh_smart_history_start_async_request() {
     _zsh_smart_history_last_autosuggest_buffer="${buffer_snapshot}"
   fi
 
+  local _async_stderr_target="/dev/null"
+  local _async_log_path
+  _async_log_path="$(_zsh_smart_history_debug_log_path)" && [[ -n "${_async_log_path}" ]] && \
+    _async_stderr_target="${_async_log_path}"
+
   builtin exec {_zsh_smart_history_async_fd}< <(
     zmodload zsh/system 2>/dev/null || true
     print -r -- "${sysparams[pid]:-}"
-    "${command[@]}" 2>/dev/null
+    "${command[@]}" 2>"${_async_stderr_target}"
     print -r -- "__zsh_smart_history_status=$?"
   )
 
@@ -321,7 +326,7 @@ _zsh_smart_history_async_response() {
 
   local -a suggestions
   suggestions=("${(@f)output}")
-  suggestions=("${(@)suggestions:#}")
+  suggestions=("${(M)suggestions[@]:#?*}")
 
   local status=0
   if (( ${#suggestions} > 0 )) && [[ "${suggestions[-1]}" == __zsh_smart_history_status=* ]]; then
